@@ -11,7 +11,7 @@ use Exporter;
 use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
 
 @ISA               	= qw(Exporter);
-our $VERSION		= '0.03';
+our $VERSION		= '0.031';
 
 =head1 NAME
 
@@ -697,7 +697,7 @@ sub get_service_profiles {
 	return (defined $xml->{outConfigs}->{lsServer} ? @{$xml->{outConfigs}->{lsServer}} : undef)
 }
 
-=head3 get_interconnect
+=head3 get_interconnects
 
 	my @interconnects = $ucs->get_interconnects;
 
