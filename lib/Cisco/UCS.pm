@@ -3,15 +3,21 @@ package Cisco::UCS;
 use warnings;
 use strict;
 
+use Cisco::UCS::Chassis;
+use Cisco::UCS::Interconnect;
+use Cisco::UCS::FEX;
+use Cisco::UCS::Blade;
 use LWP;
 use XML::Simple;
-use Carp qw(croak carp);
-use Exporter;
+use Carp qw(croak carp cluck);
 
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
+use vars qw($VERSION);
 
-@ISA               	= qw(Exporter);
-our $VERSION		= '0.031';
+our $VERSION		= '0.2';
+
+our @ATTRIBUTES		= qw(dn cookie);
+
+our %ATTRIBUTES		= ();
 
 =head1 NAME
 
@@ -21,7 +27,7 @@ Cisco::UCS - A Perl interface to the Cisco UCS XML API
 
 	use Cisco::UCS;
 
-	my $ucs = new Cisco::UCS ( 	cluster		=> $cluster, 
+	my $ucs = Cisco::UCS->new ( 	cluster		=> $cluster, 
 					port		=> $port,
 					proto		=> $proto,
 					username	=> $username,
@@ -37,6 +43,21 @@ Cisco::UCS - A Perl interface to the Cisco UCS XML API
 		print "Error ID: $error_id.  Severity: $this_error{severity}.  Description: $this_error{descr}\n";
 	}
 
+	print "Interconnect A serial : " . $ucs->interconnect(A)->serial . "\n";
+	# prints "Interconnect A serial : BFG9000"
+	
+	foreach my $chassis ($ucs->chassis) {
+		print "Chassis " . $chassis->id . " serial : " . $chassis->serial . "\n"
+	}
+	
+	# prints:
+	# "Chassis 1 serial : ABC1234"
+	# "Chassis 2 serial : ABC1235"
+	# etc.
+
+	print "Interconnect A Ethernet 1/1 TX bytes: " . $ucs->interconnect(A)->card(1)->eth_port(1)->tx_total_bytes . "\n";
+	# prints "Interconnect A Ethernet 1/1 TX bytes: 83462486"
+
 	$ucs->logout();
 
 =head1 DESCRIPTION
@@ -50,12 +71,9 @@ level calls to heirachy search and traversal methods.
 
 The primary aim of this package is to provide a simplified and abstract interface to this management heirachy.
 
-Most methods in this package return an anonymous hash, array, or array of anonymous hashes, representing the requested
-object.  Unfortunately, this means that the documentation on return types and specific values may seem a little lacking.
-
 =head2 METHODS
 
-=head3 new
+=head3 new ( CLUSTER, PORT, PROTO, USERNAME, PASSWORD )
 
 	my $ucs = new Cisco::UCS ( 	cluster		=> $cluster, 
 					port		=> $port,
@@ -66,22 +84,13 @@ object.  Unfortunately, this means that the documentation on return types and sp
 
 Constructor method.  Creates a new Cisco::UCS object representing a connection to the Cisco UCSM XML API.  
 
-Required parameters are:
+Parameters are:
 
 =over 3
 
 =item cluster
 
 The common name of the target cluster.  This name should be resolvable on the host from which the script is run.
-
-=item port
-
-The port on which to connect to the UCSM XML API on the target cluster.  This value must be 80 or 443.
-
-=item proto
-
-The protocol with which to connect to the UCSM XML API on the target cluster.  This value must be one of either
-'http' or 'https' and should be dictated by the value specified for the B<port> attribute.
 
 =item username
 
@@ -92,12 +101,22 @@ one intends to perform.
 
 The plaintext password of the username specified for the B<username> attribute for the connection.
 
+=item port
+
+The port on which to connect to the UCSM XML API on the target cluster.  This parameter is optional and will default
+to 443 if not provided.
+
+=item proto
+
+The protocol with which to connect to the UCSM XML API on the target cluster.  This value is optional hould be
+one of 'http' or 'https' and will default to 'https' if not provided.
+
 =back
 
-=head3 login
+=head3 login ()
 
 	$ucs->login;
-	print "Authentication token is $ucs->{cookie}\n";
+	print "Authentication token is $ucs->cookie\n";
 
 Creates a connection to the XML API interface of a USCM management instance.  If sucessful, the attributes of the 
 UCSM management instance are inherited by the object.  Most important of these parameters is 'cookie' representing the 
@@ -107,14 +126,14 @@ further communications.
 The default time-out value for a token is 10 minutes, therefore if you intend to create a long-running session you
 should periodicalily call refresh.
 
-=head3 refresh
+=head3 refresh ()
 
 	$ucs->refresh;
 
 Resets the expiry time limit of the existing authentication token to the default timeout period of 10m.  Usually not necessary
 for short-lived connections.
 
-=head3 logout
+=head3 logout ()
 
 	$ucs->logout;
 
@@ -123,41 +142,70 @@ token and free the current session for use by others.  The UCS XML API has a max
 number of sessions per user.  In order to ensure that the session remain available (especially if using common credentials), you should 
 always call this method on completion of a script, as an argument to die, or in any eval where a script may fail and exit before logging out;
 
+=head3 cookie ()
+
+	print $ucs->cookie;
+
+Returns the value of the authentication token.
+
+=head3 dn ()
+
+	print $ucs->dn;
+
+Returns the distinguished name that specifies the base scope of the Cisco::UCS object.
+
 =cut
 
 sub new {
         @_ == 11 or croak 'Not enough arguments for constructor';
         my ($class, %args) = @_;
 	my $self = {};
-        defined $args{cluster}  ? $self->{cluster} 	= $args{cluster}	: croak 'cluster not defined';
-        defined $args{port}     ? $self->{port} 	= $args{port}		: croak 'port not defined';
-        defined $args{proto}	? $self->{proto} 	= $args{proto}		: croak 'proto not defined';
-        defined $args{username} ? $self->{username}	= $args{username}	: croak 'username not defined';
-        defined $args{passwd}	? $self->{passwd} 	= $args{passwd}		: croak 'passwd not defined';
         bless $self, $class;
+        defined $args{cluster}  ? $self->{cluster}  = $args{cluster}	: croak 'cluster not defined';
+        defined $args{username} ? $self->{username} = $args{username}	: croak 'username not defined';
+        defined $args{passwd}	? $self->{passwd}   = $args{passwd}	: croak 'passwd not defined';
+	$self->{port}		= ($args{port}	or 443);
+	$self->{proto}		= ($args{proto} or 'https');
+	$self->{dn}		= ($args{dn} or 'sys');
         return $self;
+}
+
+{
+        no strict 'refs';
+
+        while ( my ($pseudo, $attribute) = each %ATTRIBUTES ) { 
+                *{ __PACKAGE__ . '::' . $pseudo } = sub {
+                        my $self = shift;
+                        return $self->{$attribute}
+                }   
+        }   
+
+        foreach my $attribute (@ATTRIBUTES) {
+                *{ __PACKAGE__ . '::' . $attribute } = sub {
+                        my $self = shift;
+                        return $self->{$attribute}
+                }   
+        }
 }
 
 sub login {
 	my $self = shift;
 
 	undef $self->{error};
-
-	$self->{ua}	= LWP::UserAgent->new();
+	$self->{ua}	= LWP::UserAgent->new;
 	$self->{uri}	= $self->{proto}. '://' .$self->{cluster}. ':' .$self->{port}. '/nuova';
 	$self->{req}	= HTTP::Request->new(POST => $self->{uri});
 	$self->{req}->content_type('application/x-www-form-urlencoded');
 	$self->{req}->content('<aaaLogin inName="'. $self->{username} .'" inPassword="'. $self->{passwd} .'"/>');
-	
-	my $res	= $self->{ua}->request($self->{req});
+	my $res		= $self->{ua}->request($self->{req});
 
-	unless ($res->is_success()) {
-		$self->{error}	= 'Login failure: '.$res->status_line();
+	unless ($res->is_success) {
+		$self->{error}	= 'Login failure: '.$res->status_line;
 		return
 	}
 
-	$self->{parser}	= XML::Simple->new();
-	my $xml         = $self->{parser}->XMLin($res->content());
+	$self->{parser}	= XML::Simple->new;
+	my $xml         = $self->{parser}->XMLin($res->content);
 
 	if(defined $xml->{'errorCode'}) {
 		$self->{error}	= 'Login failure: '. (defined $xml->{'errorDescr'} ? $xml->{'errorDescr'} : 'Unspecified error');
@@ -165,20 +213,17 @@ sub login {
 	}
 
 	$self->{cookie}	= $xml->{'outCookie'};
-
-	return 1
 }
 
 sub refresh {
 	my $self = shift;
-	
-	undef $self->{error};
 
+	undef $self->{error};
 	$self->{req}->content('<aaaRefresh inName="'. $self->{username} .'" inPassword="'. $self->{passwd} .'" inCookie="' . $self->{cookie} . '"/>');
 	my $res	= $self->{ua}->request($self->{req});
 
-	unless ($res->is_success()) {
-		$self->{error}	= 'Refresh failed: ' . $res->status_line();
+	unless ($res->is_success) {
+		$self->{error}	= 'Refresh failed: ' . $res->status_line;
 		return
 	}
 
@@ -190,53 +235,134 @@ sub refresh {
 	}
 
         $self->{cookie}	= $xml->{'outCookie'};
-
-	return 1;
 }
 
 sub logout {
 	my $self = shift;
 
-	return unless defined $self->{cookie};
-
+	return unless $self->{cookie};
 	undef $self->{error};
 
 	$self->_ucsm_request('<aaaLogout inCookie="'. $self->{cookie} .'" />') or return;
-
-	return 1;
 }
 
 sub _ucsm_request {
 	my ($self, $content, $class_id)	= @_;
 
 	undef $self->{error};
-
 	$self->{req}->content($content);
 	my $res	= $self->{ua}->request($self->{req});
 
-	unless ($res->is_success()) {
-		$self->{error}	= $res->status_line();
-		return
-	}
+	$self->error($res->status_line) unless $res->is_success;
 
-	my $xml;
+	my $xml = ( $class_id 
+			? $self->{parser}->XMLin($res->content, KeyAttr => $class_id) 
+			: $self->{parser}->XMLin($res->content)
+		);
 
-	if ($class_id) {
-		$xml	= $self->{parser}->XMLin($res->content(), KeyAttr => $class_id);
-	}
-	else {
-		$xml	= $self->{parser}->XMLin($res->content);
-	}
-
-	if (defined $xml->{errorCode}) {
-		$self->{error}	= (defined $xml->{'errorDescr'} ? $xml->{'errorDescr'} : 'Unspecified error');
-		return
-	}
-	
-	return $xml
+	return ( $xml->{errorCode}
+			? do {
+				$self->{error}	= ( $xml->{'errorDescr'} ? $xml->{'errorDescr'} : 'Unspecified error' );
+				undef
+			  }
+			: $xml
+		);
 }
 
-=head3 get_error_id
+# This private method provides an abstract factory-type constructor for resolved child
+# objects of the specified dn.  To maintain compatibility with existing methods and to
+# provide a single method for all child objects, there are a few important design
+# considerations that have been made.
+# 
+# Importantly we check for a 'class_filter' argument to the method which if present is
+# used to call the 'resolve_class_filter' method rather than the 'resolve_children' method.
+# This is necessary due to limitations and difficulties present in resolving child objects
+# for some objects can lead to incorrect results.  For example, resolving the child objects
+# for a chassis to retrieve the blades in the chassis is difficult, instead we can use a much
+# more efficient and simpler method of retrieving the blades in a specified chassis by
+# resolving all objects in the specified class (i.e. computeBlade) and restricting the
+# results returned using a filter method.
+#
+# The implication of doing this is that the call to 'resolve_class_filter' returns an array
+# which cannot be processed using the same logic as for a hash returned by the 'resolve_children'
+# method.  Therefore we perform extra processing to convert the returned array results to a 
+# hash using a nominated attribute in the object as the hash index for the objects.
+#
+# SYNOPSIS
+#	get_child_object ( %ARGS )
+#
+# PARAMETERS
+#	id	The optional identifier of a specific child object.  This identifier is context
+#		dependent and may be either numerical (as in the case of a chassis) or alphanumeric
+#		(as is the case with a fabric interconnect - A or B).
+#
+#	type	The desired child object type to be resolved as according to the UCSM information 
+#		management hierarchy name. e.g. etherPIo is the ethernet port child object type for line cards.
+#
+#	class	The class into which the child object will be blessed.
+#
+#	attr	The pseudo-namespace in the Cisco::UCS object in which the retrieved child onjects will be cached.
+#		For example; attr => 'interconnect' will mean that Cisco::UCS::Interconnect objects retrieved in
+#		a $ucs->get_interconnects method call will be stored in $ucs->{interconnects}->{$OBJ}.
+#	
+#	self	A reference to a Cisco::UCS object.  If not present $self is assumed to be a Cisco::UCS object.
+#
+#	uid	Where results are returned and parsed into an array and the array index is not aligned to an identifying 
+#		attribute of the object (i.e. the array index has no relation to a unique identifier for the object) then
+#		the uid may be used to refer to a unique identifying attribute of the object that should be used.
+#		For example, in resolving all blades for a Cisco::UCS object, the uid value of bladeId is used to uniquely
+#		identify all Cisco::UCS::Blade objects as the array index has no relation to a uniquely identifying feature
+#		of the blade and is not guaranteed to be consistent.
+#
+#	class_filter (%ARGS)
+#			A class filter may be specified to filter the results to a particular subset.  This is useful for
+#			operations like retrieving all blades in a particular chassis rather than retrieving all blades and
+#			manually filtering the results.
+#
+#	Where %ARGS:
+#
+#	classId	The UCSM class which should be used for the UCSM query.  For example: classId => etherPio.
+#
+#	filter	Where filter is composed of any number of valid attribute/value pairs.  For example: slotId => 1, switchId => $self->{id}.
+#
+
+sub _get_child_objects {
+        my ($self,%args)= @_; 
+	my $ucs = ( defined $self->{ucs}	? $self->{ucs}	: $self );
+	my $ref = ( defined $args{self}		? $args{self}	: $self );
+        my $xml = ( defined $args{class_filter} 
+			? $ucs->resolve_class_filter( %{$args{class_filter}} ) 
+			: $ucs->resolve_children(dn => $ref->{dn})
+		  );
+
+	if (ref($xml->{outConfigs}->{$args{type}}) eq 'ARRAY') {
+		$args{uid} ||= 'id';
+		my $res;
+		
+		foreach my $obj (@{$xml->{outConfigs}->{$args{type}}}) {
+			$res->{$obj->{$args{uid}}} = $obj
+		}
+
+		$xml->{outConfigs}->{$args{type}} = $res
+	}
+
+        return ( defined $xml->{outConfigs}->{$args{type}}
+                ? do {  my @res;
+                        foreach my $res (keys %{$xml->{outConfigs}->{$args{type}}}) {
+                                my $obj = $args{class}->new( ucs => $ucs, dn => $xml->{outConfigs}->{$args{type}}->{$res}->{dn}, id => $res );
+                                $ref->{$args{attr}}->{$res} = $obj; #print "Setting $ref\->{$args{attr}}->{$res} to $obj\n";
+                                push @res, $obj;
+                        }   
+                        return @res unless $args{id};
+                        return $ref->{$args{attr}}->{$args{id}} if $args{id} and $ref->{$args{attr}}->{$args{id}};
+                        return undef
+                     }    
+                : undef    
+                );  
+    
+}
+
+=head3 get_error_id ( $ERROR_ID )
 
 	my %error = $ucs->get_error_id($id);
 
@@ -253,7 +379,6 @@ See B<get_errors> for an example of how to obtain error_id values.
 
 sub get_error_id {
 	my ($self, $error_id)	= @_;
-
 	return unless $self->_has_cookie;
 	
 	unless ($error_id =~ /[0-9]{1,9}/) {
@@ -262,19 +387,21 @@ sub get_error_id {
 	}
 
 	my $xml		= $self->_ucsm_request('<configResolveClass inHierarchical="false" cookie="' . $self->{cookie} . '" classId="faultInst" />') or return;
-
 	my %error 	= %{$xml->{outConfigs}->{faultInst}->{$error_id}};
-
 	return %error;
 }
 
-=head3 get_errors
+=head3 get_errors ()
 
 	my @errors 	= $ucs->get_errors;
 	my %error	= $ucs->get_error_id($errors[0]);
 	print "Error $id: $error->{description}\n";
 
-Returns an array of UCSM event ID's.  The full event description of the returned event ID's can be retrieved by passing the ID to get_error_id (see above).
+Returns an array of UCSM event ID's.  The full event description of the returned event ID's can 
+be retrieved by passing the ID to get_error_id (see above).
+
+Please note that this method has been scheduled for a rewrite in future version and will likely 
+return an array of objects rather than an array of error IDs.
 
 =cut
 
@@ -282,21 +409,20 @@ sub get_errors {
 	my ($self, %args)	= @_;
 
 	$self->_check_args or return;
-	undef $self->{error};
 
-	my %severity	= (	
-				critical	=> 1,
-				major		=> 1,
-				minor		=> 1,
-				warning		=> 1,
-				info		=> 1,
-				condition	=> 1,
-				cleared		=> 1,
-				flapping	=> 1,
-				soaking		=> 1
-			);
+	my %severity = (	
+			critical	=> 1,
+			major		=> 1,
+			minor		=> 1,
+			warning		=> 1,
+			info		=> 1,
+			condition	=> 1,
+			cleared		=> 1,
+			flapping	=> 1,
+			soaking		=> 1
+		);
 
-	if (defined $args{severity} and !(defined $severity{$args{severity}})) {
+	if ( defined $args{severity} and !(defined $severity{$args{severity}}) ) {
 		$self->{error}	= 'Unknown severity type specified: ';
 		return
 	}
@@ -318,29 +444,19 @@ sub get_errors {
 
 	my $xml			= $self->_ucsm_request($content) or return;
 	my @faults 		= keys %{$xml->{outConfigs}->{faultInst}};
-
 	return @faults;
 }
 
 sub _has_cookie {
-	my $self = shift;
-
-	unless (defined $self->{cookie}) {
-		$self->{error}	= 'No authentication token found';
-		return
-	}
-
-	return 1
+	return ( $_[0]->{cookie} ? 1 : undef  )
 }
 
 sub _isInHierarchical {
 	my $inHierarchical	= lc shift;
 
-	unless ($inHierarchical =~ /true|false|0|1/) {
-		return 'false'
-	}
+	return 'false' unless ($inHierarchical =~ /true|false|0|1/); 
 
-	return if ($inHierarchical =~ /^true|false$/);
+	return $inHierarchical if ($inHierarchical =~ /^true|false$/);
 
 	return ($inHierarchical == 0 ? 'false' : 'true');
 }
@@ -394,12 +510,19 @@ sub _check_args {
         return 1;
 }
 
-=head3 resolve_class
+sub _error {
+	my ($self, $error) = @_;
+	$self->{error} = $error;
+	return undef
+}
+
+=head3 resolve_class ( %ARGS )
 
 This method is used to retrieve objects from the UCSM management heirachy by resolving the classId for specific
 object types.  This method reflects one of the base methods provided by the UCS XML API for resolution of objects.
 The method returns an XML::Simple parsed object from the UCSM containing the response.
 
+This method accepts a hash containing the value of the classID to be resolved and 
 Unless you have read the UCS XML API Guide and are certain that you know what you want to do, you shouldn't need
 to alter this method.
 
@@ -408,9 +531,9 @@ to alter this method.
 sub resolve_class {
 	my ($self,%args)= @_;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 	
-	unless (defined $args{classId}) {
+	unless ( defined $args{classId} ) {
 		$self->{error}	= 'No classId specified';
 		return
 	}
@@ -418,12 +541,12 @@ sub resolve_class {
 	$args{inHierarchical} = (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
 	my $xml	= $self->_ucsm_request('<configResolveClass inHierarchical="' . $args{inHierarchical} . 
-						'" cookie="' . $self->{cookie} . '" classId="' . $args{classId} . '" />', 'classId') or return;
+					'" cookie="' . $self->{cookie} . '" classId="' . $args{classId} . '" />') or return;
 
 	return $xml
 }	
 
-=head3 resolve_classes
+=head3 resolve_classes ( %ARGS )
 
 This method is used to retrieve objects from the UCSM management heirachy by resolving several classIds for specific
 object types.  This method reflects one of the base methods provided by the UCS XML API for resolution of objects.
@@ -437,22 +560,27 @@ to alter this method.
 sub resolve_classes {
 	my ($self,%args)= @_;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	unless (defined $args{classId}) {
 		$self->{error}	= 'No classID specified';
 		return
 	}
 
+	#print "In resolve_classes(): cookie is $self->{cookie}\nargs{inHierarchical} is $args{inHierarchical}\nargs{classId} is $args{classId}\n";
 	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
-	my $xml	= $self->_ucsm_request('<configResolveClasses inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '">' .
-				'<inIds><Id value="' . $args{classId} . '" /></inIds></configResolveClasses>', 'classId') or return;
+	#print '<configResolveClasses inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '"><inIds><Id value="' . $args{classId} . '" /></inIds></configResolveClasses>'."\n";
+	my $xml	= $self->_ucsm_request(	'<configResolveClasses inHierarchical="' . $args{inHierarchical} . 
+					'" cookie="' . $self->{cookie} . '">' .
+					'<inIds><Id value="' . $args{classId} . 
+					'" /></inIds></configResolveClasses>', 'classId'
+				) or return;
 
 	return $xml
 }	
 
-=head3 resolve_dn
+=head3 resolve_dn ( %ARGS )
 
 	my $blade = $ucs->resolve_dn( dn => 'sys/chassis-1/blade-2');
 
@@ -464,7 +592,7 @@ The method accepts a single key/value pair, with the value being the distinguish
 can be usually be retrieved by first using one of the other methods to retrieve a list of all object types (i.e. get_blades)
 and then enumerating the results to extract the dn from the desired object.
 
-	my @blades = $ucs->get_blades;i
+	my @blades = $ucs->get_blades;
 
 	foreach my $blade in (@blades) {
 		print "Dn is $blade->{dn}\n";
@@ -478,7 +606,7 @@ to alter this method.
 sub resolve_dn {
 	my ($self,%args)= @_;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	unless (defined $args{dn}) {
 		$self->{error}	= 'No dn specified';
@@ -487,12 +615,14 @@ sub resolve_dn {
 
 	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
-	my $xml	= $self->_ucsm_request('<configResolveDn dn="' . $args{dn} . '" inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '" />') or return;
-
+	my $xml	= $self->_ucsm_request(	'<configResolveDn dn="' . $args{dn} . 
+					'" inHierarchical="' . $args{inHierarchical} . 
+					'" cookie="' . $self->{cookie} . '" />' 
+				) or return undef;
 	return $xml;
 }
 
-=head3 resolve_children
+=head3 resolve_children ( %ARGS )
 
 	use Data::Dumper;
 
@@ -515,22 +645,23 @@ to alter this method.
 sub resolve_children {
 	my ($self,%args)= @_;
 
-	$self->_check_args() or return;
-
 	unless (defined $args{dn}) {
 		$self->{error}	= 'No dn specified';
 		return
 	}
 
-	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
+	$args{inHierarchical}	= ( defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false' );
 
-	my $xml	= $self->_ucsm_request('<configResolveChildren inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} .
-				'" inDn="' . $args{dn} . '"></configResolveChildren>') or return;
+	my $xml	= $self->_ucsm_request(	'<configResolveChildren inHierarchical="' . $args{inHierarchical} . 
+					'" cookie="' . $self->{cookie} .
+					'" inDn="' . $args{dn} . 
+					'"></configResolveChildren>'
+				) or return;
 
 	return $xml
 }	
 
-=head3 resolve_class_filter
+=head3 resolve_class_filter ( %ARGS )
 
 	my $associated_servers = $ucs->resolve_class_filter(	classId		=> 'computeBlade',
 								association	=> 'associatied' 	);
@@ -549,24 +680,17 @@ The filter is to be specified as any number of name/value pairs in addition to t
 sub resolve_class_filter {
 	my($self,%args)	= @_;
 
-	$self->_check_args() or return;
-
-	unless (defined $args{dn}) {
-		$self->{error}	= 'No dn specified';
-		return
-	}
-
 	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
 	my $filter	= $self->_createFilter(%args) or return;
 
 	my $xml		= $self->_ucsm_request('<configResolveClass classId="' . $args{classId} . '" inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '">' .
-				$filter . '</configResolveClass>', 'classId') or return;
+				$filter . '</configResolveClass>', $args{classId}) or return;
 
 	return $xml
 }
 
-=head3 get_cluster_status
+=head3 get_cluster_status ()
 
 	my $status = $ucs->get_cluster_status;
 
@@ -578,14 +702,14 @@ of a HA pair of Fabric Interconnects, this status is representative of the clust
 sub get_cluster_status {
 	my $self= shift;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	my $xml	= $self->resolve_dn(dn => 'sys') or return;
 
 	return (defined $xml->{outConfig}->{topSystem} ? $xml->{outConfig}->{topSystem} : undef)
 }
 
-=head3 get_mgmt_entities
+=head3 get_mgmt_entities ()
 
 	my @mgmt_entities = $ucs->get_mgmt_entities;
 
@@ -604,7 +728,7 @@ for hosting UCSM management entity instance and providing the cluster capabiltie
 sub get_mgmt_entities {
         my $self= shift;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	my $xml	= $self->resolve_class(classId  => 'mgmtEntity') or return;
 
@@ -612,7 +736,7 @@ sub get_mgmt_entities {
 }
 
 
-=head3 get_primary_mgmt_entity
+=head3 get_primary_mgmt_entity ()
 
 	my $primary = $ucs->get_primary_mgmt_entity;
 	print "Management entity $entity->{id} is primary\n";
@@ -626,14 +750,14 @@ This is the active managing instance of UCSM in the target cluster.
 sub get_primary_mgmt_entity {
 	my $self	= shift;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	my $xml		= $self->resolve_class_filter(classId => 'mgmtEntity', leadership => 'primary') or return;
 
 	return (defined $xml->{outConfigs}->{mgmtEntity} ? $xml->{outConfigs}->{mgmtEntity} : undef)
 }
 
-=head3 get_subordinate_mgmt_entity
+=head3 get_subordinate_mgmt_entity ()
 
 	print 'Management entity ', $ucs->get_subordinate_mgmt_entity->{id}, ' is the subordinate management entity in cluster ',$ucs->{cluster},"\n";
 
@@ -644,14 +768,14 @@ Returns an anonymous hash containing information on the subordinate UCSM managem
 sub get_subordinate_mgmt_entity {
 	my $self= shift;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	my $xml	= $self->resolve_class_filter(classId => 'mgmtEntity', leadership => 'subordinate') or return;
 
 	return (defined $xml->{outConfigs}->{mgmtEntity} ? $xml->{outConfigs}->{mgmtEntity} : undef);
 }
 
-=head3 get_service_profile
+=head3 get_service_profile ( %ARGS )
 
 Returns an anonymous hash containing information on the requested service profile object.
 
@@ -660,7 +784,7 @@ Returns an anonymous hash containing information on the requested service profil
 sub get_service_profile {
         my ($self,%args) = @_; 
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	unless (defined $args{dn}) {
 		$self->{error}	= 'No dn specified';
@@ -674,7 +798,7 @@ sub get_service_profile {
 	return (defined $xml->{outConfig}->{lsServer} ? $xml->{outConfig}->{lsServer} : undef)
 }
 
-=head3 get_service_profiles
+=head3 get_service_profiles ()
 
 	my @service_profiles = $ucs->get_service_profiles;
 
@@ -690,151 +814,109 @@ Returns an array of anonymous hashs representing configured service profile obje
 sub get_service_profiles {
         my $self = shift;
 
-	$self->_check_args() or return;
+	$self->_check_args or return;
 
 	my $xml	= $self->resolve_class_filter(classId => 'lsServer', type => 'instance') or return;
 
 	return (defined $xml->{outConfigs}->{lsServer} ? @{$xml->{outConfigs}->{lsServer}} : undef)
 }
 
-=head3 get_interconnects
+=head3 interconnect ( $ID )
 
-	my @interconnects = $ucs->get_interconnects;
+	my $serial = $ucs->interconnect(A)->serial;
 
-	foreach my $ic (@interconnects) {
-		print "Interconnect $ic HA status is $ic->{ha_ready}\n";
-	}
+	print "Interconnect $_ serial: " . $ucs->interconnect($_) . "\n" for qw(A B);
 
-Returns an array of anonymous hashs representing UCS Fabric Interconnect objects.  
+Returns a Cisco::UCS::Interconnect object for the specified interconnect ID (either A or B).
+
+Note that the default behaviour of this method is to return a cached copy of a previously retrieved 
+Cisco::UCS::Interconnect object if one is available.  Please see the B<Caching Methods> section in B<NOTES>
+for further information.
 
 =cut
 
-sub get_interconnects {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	$args{classId}		= 'networkElement';
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-
-	my $xml 		= resolve_classes($self,%args);
-
-	undef $args{classID};
-
-	return (defined $xml->{outConfigs}->{networkElement} ? @{$xml->{outConfigs}->{networkElement}} : undef)
+sub interconnect {
+	my ($self, $id)	= @_;
+	return ( defined $self->{interconnect}->{$id} ? $self->{interconnect}->{$id} : $self->get_interconnect($id) )
 }
 
-=head3 get_interconnect
+=head3 get_interconnect ( $ID )
 
-	my $interconnect = $ucs->get_interconnect(dn => 'sys/switch-A');
+	my $interconnect = $ucs->get_interconnect(A);
 
-	or
+	print $interconnect->model;
 
-	my $interconnect = $ucs->get_interconnect(id => 'A');
+Returns a Cisco::UCS::Interconnect object for the specified interconnect ID (either A or B).
 
-Returns an anonymous hash containing information on the specified UCS Fabric Interconnect object.  
-The method accepts either the distinguished name of the desired Interconnect, or the ID of the 
-Fabric Interconnect in the target cluster.
+This method always queries the UCSM for information on the specified interconnect - contrast this
+with the behaviour of the caching method I<interconnect()>.
 
 =cut
 
 sub get_interconnect {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	unless (defined $args{dn} or $args{id} or $args{serial}) {
-		$self->{error}	= 'No dn or id or serial defined';
-		return
-	}
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-
-	my $xml;
-
-	if ($args{dn}) {
-		$xml		= $self->resolve_dn(%args);
-	}
-	else { 
-		$args{classId}	= 'networkElement';
-		$xml		= $self->resolve_class_filter(%args);
-		undef $args{classId};
-	}
-
-	return (defined $xml->{outConfig}->{networkElement} ? $xml->{outConfig}->{networkElement} : undef)
+	my ($self, $id)=@_;
+	return $self->get_interconnects($id)
 }
 
-=head3 get_fexs
+=head3 get_interconnects ()
 
-	my @fexs = $ucs->get_fexs;
-	print "Fabric Extender - thermal $fex[0]->{thermal} - temperature $fex[0]->{temp}\n";
+	my @interconnects = $ucs->get_interconnects;
 
-Returns an array of anonymous hashes, each containing information on a UCS Fabric Extender object
-identified within the cluster.
+	foreach my $ic (@interconnects) {
+		print "Interconnect $ic->id operability is $ic->operability\n";
+	}
+
+Returns an array of Cisco::UCS::Interconnect objects.  This is a non-caching method.
 
 =cut
 
-sub get_fexs {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-
-	$self->{classId}	= 'equipmentIOCard';
-	my $xml;
-
-	if (defined $args{chassisId}) {
-		$xml	= $self->resolve_class_filter(%args)
-	}
-	else {
-		$xml	= $self->resolve_class()
-	}
-
-	undef $self->{classId};
-	return (defined $xml->{outConfigs}->{equipmentIOCard} ? @{$xml->{outConfigs}->{equipmentIOCard}} : undef)
+sub get_interconnects {
+	my ($self, $id)	=@_;
+	return $self->_get_child_objects(id => $id, type => 'networkElement', class => 'Cisco::UCS::Interconnect', attr => 'interconnect');
 }
 
-=head3 get_fex
+=head3 blade ( $ID )
 
-	my $fex = $ucs->get_fex(dn => 'sys/chassis-1/slot-1');
+	print "Blade 1/1 serial : " . $ucs->blade('1/1')->serial .. "\n;
 
-	or
+Returns a Cisco::UCS::Blade object representing the specified blade as given by the value of $ID.  The blade ID
+should be given using the standard Cisco UCS blade identification form as used in the UCSM CLI; namely 
+B<chassis_id/blade_id> where both chassis_id and blade_id are valid numerical values for the target cluster.
+Note that you will have to enclose the value of $ID in quotation marks to avoid a syntax error.
 
-	my $fex = $ucs->get_fex(chassisId => 1,	id => 1);
+Note that this is a caching method and the default behaviour of this method is to return a cached 
+copy of a previously retrieved Cisco::UCS::Blade object if one is available.  If a non-cached object is
+required, then please consider using the equivalent B<get_blade> method below.
 
-Returns an anonymous hash containing information on a UCS Fabric Extender object.  
-The Fabric Extender (FEX) may be given either by distinguished name (dn) or by physical locality of the residing chassis and slot.
+Please see the B<Caching Methods> section in B<NOTES> for further information.
 
 =cut
 
-sub get_fex {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	unless ($args{dn} or $args{serial} or ($args{chassisId} and $args{id})) {
-		$self->{error}	= 'No dn or serial or chassis ID and FEX ID specified';
-		return
-	}
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-	my $xml;
-
-	if (defined $args{dn}) {
-		$xml		= $self->resolve_dn(%args)
-	}
-	else {
-		$self->{classId}= 'equipmentIOCard';
-		$xml		= $self->resolve_class_filter(%args);
-		undef $self->{classId};
-	}
-	
-	return (defined $xml->{outConfigs}->{equipmentIOCard} ? $xml->{outConfigs}->{equipmentIOCard} : undef)
+sub blade {
+	my ($self, $id)	= @_;
+	return ( defined $self->{blade}->{$id} ? $self->{blade}->{$id} : $self->get_blade($id) )
 }
 
-=head3 get_blades
+=head3 get_blade ( $ID )
+
+	print "Blade 1/1 serial : " . $ucs->get_blade('1/1')->serial .. "\n;
+
+Returns a Cisco::UCS::Blade object representing the specified blade as given by the value of $ID.  The blade ID
+should be given using the standard Cisco UCS blade identification form as used in the UCSM CLI; namely 
+B<chassis_id/blade_id> where both chassis_id and blade_id are valid numerical values for the target cluster.
+Note that you will have to enclose the value of $ID in quotation marks to avoid a syntax error.
+
+Note that this method is non-caching and always queries the UCSM for information.  Consequently may be more 
+expensive than the equivalent caching B<blade> method described above.
+
+=cut
+
+sub get_blade {
+	my ($self, $id)=@_;
+	return $self->get_blades($id)
+}
+
+=head3 get_blades ()
 
 	my @blades = $ucs->get_blades();
 
@@ -842,76 +924,59 @@ sub get_fex {
 		print "Model: $blade->{model}\n";
 	}
 
-Returns an array of hashes each representative of a UCS server object.  The returned objects are identical
-to those represented by the Cisco::UCS::Blade subclass.
+Returns an array of B<Cisco::UCS::Blade> objects with each object representing a blade within the UCS cluster.
 
 =cut
 
 sub get_blades {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-	$args{classId}		= 'computeBlade';
-	my $xml;
-	
-	if ($args{chassisId}) {
-		$xml		= $self->resolve_class_filter(%args)
-	}
-	else {
-		$xml		= $self->resolve_classes(%args)
-	}
-
-	undef $args{classId};
-
-	return (defined $xml->{outConfigs}->{computeBlade} ? @{$xml->{outConfigs}->{computeBlade}} : undef)
+	my ($self, $id, %args)	=@_;
+	return $self->_get_child_objects(id => $id, type => 'computeBlade', class => 'Cisco::UCS::Blade', attr => 'blade',
+					uid => 'serverId', class_filter => { classId => 'computeBlade' });
 }
 
-=head3 get_blade
+=head3 chassis ( $ID )
 
-	my blade = $ucs->get_blade(dn => 'sys/chassis-1/blade-2'
+	my $chassis = $ucs->chassis(1);
+	print "Chassis 1 serial : " . $chassis->serial . "\n";
+	# or
+	print "Chassis 1 serial : " . $ucs->chassis(1)->serial . "\n";
 
-	or
+	foreach my $psu ( $ucs->chassis(1)->get_psus ) {
+		print $psu->id . " thermal : " . $psu->thermal . "\n"
+	}
 
-	my $blade = $ucs->get_blade(chassisId => 1, slotId => 2);
+Returns a Cisco::UCS::Chassis object representing the chassis identified by by the specified value of ID.
 
-	or
+Note that this is a caching method and the default behaviour of this method is to return a cached 
+copy of a previously retrieved Cisco::UCS::Chassis object if one is available.  If a non-cached object is
+required, then please consider using the equivalent B<get_chassis> method below.
 
-	my $blade = $ucs->get_blade(serial => 'QJ547L9987');
-
-	or
-
-	my $blade = $ucs->get_blade(uuid => '0000-000000-000000');
-
-Returns an anonymous hash representing a UCS server blade object.  The blade may be specified either by 
-distinguished name (dn), by physical locality of chassis and slot id, by serial number or by uuid.
+Please see the B<Caching Methods> section in B<NOTES> for further information.
 
 =cut
 
-sub get_blade {
-	my ($self,%args)	= @_;
+sub chassis {
+	my ($self, $id)	= @_;
+	return ( defined $self->{chassis}->{$id} ? $self->{chassis}->{$id} : $self->get_chassis($id) )
+}
 
-	$self->_check_args() or return;
+=head3 get_chassis ( $ID )
 
-	unless ($args{dn} or $args{serial} or $args{uuid} or ($args{chassisId} and $args{slotId})) {
-		$self->{error}	= 'No dn or serial or uuid or chassis ID and slot ID specified';
-		return
-	}
+	my $chassis = $ucs->get_chassis(1);
+	print "Chassis 1 label : " . $chassis->label . "\n";
+	# or
+	print "Chassis 1 label : " . $ucs->get_chassis(1)->label . "\n";
 
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-	my $xml;
+Returns a Cisco::UCS::Chassis object representing the chassis identified by by the specified value of ID.
 
-	if ($args{dn}) {
-		$xml		= $self->resolve_dn($self,%args);
-	}
-	else {
-		$args{classId} 	= 'computeBlade';
-		$xml 		= $self->resolve_class_filter($self,%args);
-		undef $args{classId}
-	}
-	
-	return (defined $args{dn} ? $xml->{outConfig}->{computeBlade} : $xml->{outConfigs}->{computeBlade})
+Note that this method is non-caching and always queries the UCSM for information.  Consequently may be more 
+expensive than the equivalent caching B<chassis> method described above.
+
+=cut
+
+sub get_chassis {
+	my ($self, $id)=@_;
+	return $self->get_chassiss($id)
 }
 
 =head3 get_chassiss
@@ -922,7 +987,7 @@ sub get_blade {
 		print "Chassis $chassis->{id} serial number: $chassis->{serial}\n";
 	}
 
-Returns an array of hashes with each hash containing information on a single chassis within the system.
+Returns an array of Cisco::UCS::Chassis objects representing all chassis present within the cluster.
 
 Note that this method is named get_chassiss (spelt with two sets of double-s's) as there exists no English language collective plural for
 the word chassis.
@@ -930,102 +995,8 @@ the word chassis.
 =cut
 
 sub get_chassiss {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	unless ($args{dn} or $args{serial} or $args{uuid} or ($args{chassisId} and $args{slotId})) {
-		$self->{error}	= 'No dn or serial or uuid or chassis ID and slot ID specified';
-		return
-	}
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-
-	$args{classId}		= 'equipmentChassis';
-	my $xml 		= $self->resolve_classes($self,%args);
-	undef $args{classID};
-
-	return (defined $xml->{outConfigs}->{equipmentChassis} ? @{$xml->{outConfigs}->{equipmentChassis}} : undef)
-}
-
-=head3 get_chassis
-
-	my $chassis = $ucs->get_chassis;
-	print "Chassis serial number: $chassis->{serial}\n";
-	my $chassis = new UCS::Chassis(dn => $chassis->{dn});
-
-Returns a hash containing information about the requested chassis given the distinguished name (dn) 
-of a chassis in the target cluster.  This method is typically used for the creation of a UCS::Chassis object.
-
-=cut
-
-sub get_chassis {
-	my ($self,%args)	= @_;
-
-	$self->_check_args() or return;
-
-	unless ($args{dn} or $args{serial} or $args{id} or $args{uuid}) {
-		$self->{error}	= 'No dn or serial or uuid or chassis ID and slot ID specified';
-		return
-	}
-
-	$args{inHierarchical} 	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-	my $xml;
-
-	if ($args{dn}) {
-		$xml		= $self->resolve_dn($self,%args);
-	}
-	else {
-		$args{classId}	= 'equipmentChassis';
-		$xml		= $self->resolve_class_filter($self,%args);
-		undef $args{classId};
-	}
-
-	return (defined $args{dn} ? $xml->{outConfig}->{equipmentChassis} : $xml->{outConfigs}->{equipmentChassis})
-}
-
-=head3 get_psus
-
-This method provides a method for child classes that returns all power supply units for a specific object type.  Arguably, this method
-should not be in this class as the concept of a UCS object as an abstract 'type' does not physically or logically 'have' a PSU.  
-The justification for having this method in the parent class is to reduce code duplication, but this is a candidate for removal as it is 
-almost always overridden in subclasses.
-
-=cut
-
-sub get_psus {
-        my ($self,$psu)	= @_; 
-
-	$self->_check_args() or return;
-
-        my $xml		= $self->resolve_children(dn => $self->{dn});
-        $xml		= %{$xml->{outConfigs}->{equipmentPsu}};
-
-	defined $psu and return $psu->{outConfigs}->{equipmentPsu}->{$psu};
-
-	my @xml;
-
-	while (my($key,$value) = each(%{$xml})) {
-		push @xml, $value;
-	}
-
-	return @xml;
-}
-
-=head3 get_psu
-
-This method provides a method for child classes that returns the power supply unit for a specific object type.  Arguably, this method
-should not be in this class as a UCS object as an abstract type does not have a PSU.  The justification for having this method in the 
-parent class is to reduce code duplication, but this is a candidate for removal as it is almost always overridden in sbclasses.
-
-=cut
-
-sub get_psu {
-        my ($self,$psu)	= @_; 
-
-        $self->_check_args or return;
-
-	return $self->get_psus($psu);
+	my ($self, $id)	=@_;
+	return $self->_get_child_objects(id => $id, type => 'equipmentChassis', class => 'Cisco::UCS::Chassis', attr => 'chassis');
 }
 
 =head3 full_state_backup
@@ -1162,10 +1133,20 @@ sub _backup {
 	return 1;
 }
 
-=head1 TODO
+=head1 NOTES
 
-Quite a lot; this package started out as a way to easily reduce the amount of copying and pasting I was doing but it grew quickly.
-Note everything has been implemented nicely and this package barely scrapes the surface of the UCS API capabilities.
+=head2 Caching Methods
+
+Several methods in the module return cached objects that have been previously retrieved by querying UCSM, this is 
+done to improve the performance of methods where a cached copy is satisfactory for the intended purpose.  The trade
+off for the speed and lower resource requirement is that the cached copy is not guaranteed to be an up-to-date 
+representation of the current state of the object.
+
+As a matter of convention, all caching methods are named after the singular object (i.e. interconnect(), chassis())
+whilst non-caching methods are named I<get_<object>>.  Non-caching methods will always query UCSM for the object,
+as will requests for cached objects not present in cache.
+
+=cut
 
 =over 3
 
@@ -1193,15 +1174,46 @@ methods common to most object type (fans, psus) in the main package.
 
 =head1 AUTHOR
 
-Luke Poskitt, C<< <luke.poskitt at gmail.com> >>
-
-=cut
+Luke Poskitt, C<< <ltp at cpan.org> >>
 
 =head1 BUGS
 
-Plenty, I'm sure.
+Please report any bugs or feature requests to C<bug-cisco-ucs at rt.cpan.org>, or through
+the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Cisco-UCS>.  I will be notified, and then you'll
+automatically be notified of progress on your bug as I make changes.
+
+=head1 SUPPORT
+
+You can find documentation for this module with the perldoc command.
+
+    perldoc Cisco::UCS
+
+
+You can also look for information at:
+
+=over 4
+
+=item * RT: CPAN's request tracker
+
+L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=Cisco-UCS>
+
+=item * AnnoCPAN: Annotated CPAN documentation
+
+L<http://annocpan.org/dist/Cisco-UCS>
+
+=item * CPAN Ratings
+
+L<http://cpanratings.perl.org/d/Cisco-UCS>
+
+=item * Search CPAN
+
+L<http://search.cpan.org/dist/Cisco-UCS/>
+
+=back
 
 =head1 LICENSE AND COPYRIGHT
+
+Copyright 2012 Luke Poskitt.
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of either: the GNU General Public License as published
@@ -1211,5 +1223,4 @@ See http://dev.perl.org/licenses/ for more information.
 
 =cut
 
-1; 
-
+1;
