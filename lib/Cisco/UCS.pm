@@ -13,7 +13,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.2';
+our $VERSION		= '0.21';
 
 our @ATTRIBUTES		= qw(dn cookie);
 
@@ -157,7 +157,6 @@ Returns the distinguished name that specifies the base scope of the Cisco::UCS o
 =cut
 
 sub new {
-        @_ == 11 or croak 'Not enough arguments for constructor';
         my ($class, %args) = @_;
 	my $self = {};
         bless $self, $class;
