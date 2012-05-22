@@ -7,13 +7,14 @@ use Cisco::UCS::Chassis;
 use Cisco::UCS::Interconnect;
 use Cisco::UCS::FEX;
 use Cisco::UCS::Blade;
+use Cisco::UCS::ServiceProfile;
 use LWP;
 use XML::Simple;
 use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.21';
+our $VERSION		= '0.22';
 
 our @ATTRIBUTES		= qw(dn cookie);
 
@@ -334,7 +335,7 @@ sub _get_child_objects {
 			: $ucs->resolve_children(dn => $ref->{dn})
 		  );
 
-	if (ref($xml->{outConfigs}->{$args{type}}) eq 'ARRAY') {
+	if (ref($xml->{outConfigs}->{$args{type}}) eq 'ARRAY') { 
 		$args{uid} ||= 'id';
 		my $res;
 		
@@ -343,10 +344,10 @@ sub _get_child_objects {
 		}
 
 		$xml->{outConfigs}->{$args{type}} = $res
-	}
+	} 
 
         return ( defined $xml->{outConfigs}->{$args{type}}
-                ? do {  my @res;
+                ? do {  my @res; 
                         foreach my $res (keys %{$xml->{outConfigs}->{$args{type}}}) {
                                 my $obj = $args{class}->new( ucs => $ucs, dn => $xml->{outConfigs}->{$args{type}}->{$res}->{dn}, id => $res );
                                 $ref->{$args{attr}}->{$res} = $obj; #print "Setting $ref\->{$args{attr}}->{$res} to $obj\n";
@@ -356,7 +357,7 @@ sub _get_child_objects {
                         return $ref->{$args{attr}}->{$args{id}} if $args{id} and $ref->{$args{attr}}->{$args{id}};
                         return undef
                      }    
-                : undef    
+                : undef
                 );  
     
 }
@@ -774,27 +775,37 @@ sub get_subordinate_mgmt_entity {
 	return (defined $xml->{outConfigs}->{mgmtEntity} ? $xml->{outConfigs}->{mgmtEntity} : undef);
 }
 
-=head3 get_service_profile ( %ARGS )
+=head3 service_profile ( $ID )
 
-Returns an anonymous hash containing information on the requested service profile object.
+Returns a Cisco::UCS::ServiceProfile object where $ID is the user-specified name of the service profile.
+
+This is a caching method and will return a cached copy of a previously retrieved Cisco::UCS::ServiceProfile object
+should one be available. i If you require a fresh copy of the object then consider using the B<get_service_profile>
+method below.
+
+Please see the B<Caching Methods> section in B<NOTES> for further information.
+
+=cut
+
+sub service_profile {
+	my ($self, $id)=@_;
+	return ( defined $self->{service_profile}->{$id} ? $self->{service_profile}->{$id} : $self->get_service_profile($id) )
+}
+
+=head3 get_service_profile ( $ID )
+
+Returns a Cisco::UCS::ServiceProfile object where $ID is the user-specified name of the service profile.
+
+This method always queries the UCSM for information on the specified service profile - consequently this
+method may be more expensive that the equivalent caching method I<service_profile>.
+
+Please see the B<Caching Methods> section in B<NOTES> for further information.
 
 =cut
 
 sub get_service_profile {
-        my ($self,%args) = @_; 
-
-	$self->_check_args or return;
-
-	unless (defined $args{dn}) {
-		$self->{error}	= 'No dn specified';
-		return
-	}
-
-	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-
-	my $xml	= $self->resolve_dn($self,%args) or return;
-        
-	return (defined $xml->{outConfig}->{lsServer} ? $xml->{outConfig}->{lsServer} : undef)
+	my ($self, $id)	= @_;
+	return $self->get_service_profiles($id)
 }
 
 =head3 get_service_profiles ()
@@ -811,13 +822,18 @@ Returns an array of anonymous hashs representing configured service profile obje
 
 
 sub get_service_profiles {
-        my $self = shift;
+	my ($self, $id)	=@_;
+	return $self->_get_child_objects(id => $id, type => 'lsServer', class => 'Cisco::UCS::ServiceProfile', 
+					uid => 'name', attr => 'service_profile', class_filter => { classId => 'lsServer' });
 
-	$self->_check_args or return;
+	#return $self->_get_child_objects(id => $id, type => 'computeBlade', class => 'Cisco::UCS::Blade', attr => 'blade',
+	#				uid => 'serverId', class_filter => { classId => 'computeBlade' });
 
-	my $xml	= $self->resolve_class_filter(classId => 'lsServer', type => 'instance') or return;
+	#$self->_check_args or return;
 
-	return (defined $xml->{outConfigs}->{lsServer} ? @{$xml->{outConfigs}->{lsServer}} : undef)
+	#my $xml	= $self->resolve_class_filter(classId => 'lsServer', type => 'instance') or return;
+
+	#return (defined $xml->{outConfigs}->{lsServer} ? @{$xml->{outConfigs}->{lsServer}} : undef)
 }
 
 =head3 interconnect ( $ID )
@@ -849,6 +865,8 @@ Returns a Cisco::UCS::Interconnect object for the specified interconnect ID (eit
 
 This method always queries the UCSM for information on the specified interconnect - contrast this
 with the behaviour of the caching method I<interconnect()>.
+
+Please see the B<Caching Methods> section in B<NOTES> for further information.
 
 =cut
 
