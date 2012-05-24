@@ -14,9 +14,9 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.22';
+our $VERSION		= '0.23';
 
-our @ATTRIBUTES		= qw(dn cookie);
+our @ATTRIBUTES		= qw(dn cluster cookie);
 
 our %ATTRIBUTES		= ();
 
@@ -148,6 +148,12 @@ always call this method on completion of a script, as an argument to die, or in 
 	print $ucs->cookie;
 
 Returns the value of the authentication token.
+
+=head3 cluster ()
+
+	print $ucs->cluster;
+
+Returns the value of cluster as given in the constructor.
 
 =head3 dn ()
 
