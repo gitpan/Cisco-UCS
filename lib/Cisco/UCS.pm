@@ -7,6 +7,7 @@ use Cisco::UCS::Chassis;
 use Cisco::UCS::Interconnect;
 use Cisco::UCS::FEX;
 use Cisco::UCS::Blade;
+use Cisco::UCS::MgmtEntity;
 use Cisco::UCS::ServiceProfile;
 use LWP;
 use XML::Simple;
@@ -14,7 +15,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.23';
+our $VERSION		= '0.24';
 
 our @ATTRIBUTES		= qw(dn cluster cookie);
 
@@ -29,8 +30,6 @@ Cisco::UCS - A Perl interface to the Cisco UCS XML API
 	use Cisco::UCS;
 
 	my $ucs = Cisco::UCS->new ( 	cluster		=> $cluster, 
-					port		=> $port,
-					proto		=> $proto,
 					username	=> $username,
 					passwd		=> $password
 				);
@@ -76,7 +75,7 @@ The primary aim of this package is to provide a simplified and abstract interfac
 
 =head3 new ( CLUSTER, PORT, PROTO, USERNAME, PASSWORD )
 
-	my $ucs = new Cisco::UCS ( 	cluster		=> $cluster, 
+	my $ucs = Cisco::UCS->new ( 	cluster		=> $cluster, 
 					port		=> $port,
 					proto		=> $proto,
 					username	=> $username,
@@ -245,10 +244,8 @@ sub refresh {
 
 sub logout {
 	my $self = shift;
-
 	return unless $self->{cookie};
 	undef $self->{error};
-
 	$self->_ucsm_request('<aaaLogout inCookie="'. $self->{cookie} .'" />') or return;
 }
 
@@ -573,10 +570,8 @@ sub resolve_classes {
 		return
 	}
 
-	#print "In resolve_classes(): cookie is $self->{cookie}\nargs{inHierarchical} is $args{inHierarchical}\nargs{classId} is $args{classId}\n";
 	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
-	#print '<configResolveClasses inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '"><inIds><Id value="' . $args{classId} . '" /></inIds></configResolveClasses>'."\n";
 	my $xml	= $self->_ucsm_request(	'<configResolveClasses inHierarchical="' . $args{inHierarchical} . 
 					'" cookie="' . $self->{cookie} . '">' .
 					'<inIds><Id value="' . $args{classId} . 
@@ -715,30 +710,61 @@ sub get_cluster_status {
 	return (defined $xml->{outConfig}->{topSystem} ? $xml->{outConfig}->{topSystem} : undef)
 }
 
+=head3 mgmt_entity ( $id )
+
+	print "HA status : " . $ucs->mgmt_entity(A)->ha_readiness . "\n";
+	
+	my $mgmt_entity = $ucs->mgmt_entity('B');
+	print $mgmt_entity->leadership;
+
+Returns a Cisco::UCS::MgmtEntity object for the specified management instance (either 'A' or 'B').
+
+This is a caching method and will return a cached copy of a previously retrieved Cisco::UCS::MgmtEntity object
+should one be available. i If you require a fresh copy of the object then consider using the B<get_mgmt_entity>
+method below.
+
+Please see the B<Caching Methods> section in B<NOTES> for further information.
+
+=cut
+
+sub mgmt_entity {
+	my ($self, $id) = @_;
+	return ( defined $self->{mgmt_entity}->{$id} ? $self->{mgmt_entity}->{$id} : $self->mgmt_entity($id) )
+}
+
+=head3 get_mgmt_entity ( $id )
+
+	print "Management services state : " . $ucs->get_mgmt_entity(A)->mgmt_services_state . "\n";
+	
+Returns a Cisco::UCS::MgmtEntity object for the specified management instance (either 'A' or 'B').
+
+This method always queries the UCSM for information on the specified management entity - consequently 
+this method may be more expensive that the equivalent caching method I<get_mgmt_entity>.
+
+Please see the B<Caching Methods> section in B<NOTES> for further information.
+
+=cut
+
+sub get_mgmt_entity {
+	my ($self, $id)	= @_;
+	return $self->get_mgmt_entities($id)
+}
+
 =head3 get_mgmt_entities ()
 
 	my @mgmt_entities = $ucs->get_mgmt_entities;
 
 	foreach $entity (@mgmt_entities) {
-		print "Management entity $entity->{id} is the $entity->{role} entity\n";
+		print "Management entity " . $entity->id . " is the " . $entity->leadership . " entity\n";
 	}
 
-Returns an anonymous array containing information on the UCSM management entity objects.  The management entity is representitive 
-of an instance of the UCSM agent running on a supported hardware platform (Fabric Interconnects).
-
-Note that there is a difference between the Fabric Interconnect as a hardware platform that provides the physical hardware platform
-for hosting UCSM management entity instance and providing the cluster capabilties and the management entity as a logical construct.
+Returns an array of Cisco::UCS::MgmtEntity objects representing all management entities in the cluster (usually two - 'A' and 'B').
 
 =cut
 
 sub get_mgmt_entities {
-        my $self= shift;
-
-	$self->_check_args or return;
-
-	my $xml	= $self->resolve_class(classId  => 'mgmtEntity') or return;
-
-	return (defined $xml->{outConfigs}->{mgmtEntity} ? @{$xml->{outConfigs}->{mgmtEntity}} : undef)
+        my ($self, $id) = @_;
+	return $self->_get_child_objects(id => $id, type => 'mgmtEntity', class => 'Cisco::UCS::MgmtEntity', attr => 'mgmt_entity');
 }
 
 
@@ -819,10 +845,12 @@ sub get_service_profile {
 	my @service_profiles = $ucs->get_service_profiles;
 
 	foreach my $service_profile (@service_profiles) {
-		print "Service Profile: $service_profile->{name}\n";
+		print "Service Profile: " . $service_profile->name .
+		      " associated to blade: " . $service_profile->pnDn . "\n";
 	}
 
-Returns an array of anonymous hashs representing configured service profile objects.  
+Returns an array of Cisco::UCS::ServiceProfile objects representing all service profiles
+currently present on the target UCS cluster.
 
 =cut
 
@@ -831,15 +859,6 @@ sub get_service_profiles {
 	my ($self, $id)	=@_;
 	return $self->_get_child_objects(id => $id, type => 'lsServer', class => 'Cisco::UCS::ServiceProfile', 
 					uid => 'name', attr => 'service_profile', class_filter => { classId => 'lsServer' });
-
-	#return $self->_get_child_objects(id => $id, type => 'computeBlade', class => 'Cisco::UCS::Blade', attr => 'blade',
-	#				uid => 'serverId', class_filter => { classId => 'computeBlade' });
-
-	#$self->_check_args or return;
-
-	#my $xml	= $self->resolve_class_filter(classId => 'lsServer', type => 'instance') or return;
-
-	#return (defined $xml->{outConfigs}->{lsServer} ? @{$xml->{outConfigs}->{lsServer}} : undef)
 }
 
 =head3 interconnect ( $ID )

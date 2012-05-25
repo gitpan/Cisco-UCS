@@ -12,7 +12,9 @@ WriteMakefile(
       : ()),
     PL_FILES            => {},
     PREREQ_PM => {
+        'LWP'				=> 0,
         'Test::More'			=> 0,
+        'XML::Simple'			=> 0,
 	'Cisco::UCS::Chassis'		=> 0,
 	'Cisco::UCS::Interconnect'	=> 0,
 	'Cisco::UCS::FEX'		=> 0,
