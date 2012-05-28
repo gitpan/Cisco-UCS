@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Cisco-UCS
-version:            0.24
+version:            0.25
 abstract:           A Perl interface to the Cisco UCS XML API
 author:
     - Luke Poskitt <ltp@cpan.org>
@@ -15,6 +15,7 @@ requires:
     Cisco::UCS::Chassis:  0
     Cisco::UCS::FEX:      0
     Cisco::UCS::Interconnect:  0
+    Cisco::UCS::MgmtEntity:  0
     Cisco::UCS::ServiceProfile:  0
     LWP:                  0
     Test::More:           0
