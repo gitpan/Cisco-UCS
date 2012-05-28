@@ -7,6 +7,7 @@ use Cisco::UCS::Chassis;
 use Cisco::UCS::Interconnect;
 use Cisco::UCS::FEX;
 use Cisco::UCS::Blade;
+use Cisco::UCS::Fault;
 use Cisco::UCS::MgmtEntity;
 use Cisco::UCS::ServiceProfile;
 use LWP;
@@ -15,7 +16,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.25';
+our $VERSION		= '0.26';
 
 our @ATTRIBUTES		= qw(dn cluster cookie);
 
@@ -409,45 +410,8 @@ return an array of objects rather than an array of error IDs.
 =cut
 
 sub get_errors {
-	my ($self, %args)	= @_;
-
-	$self->_check_args or return;
-
-	my %severity = (	
-			critical	=> 1,
-			major		=> 1,
-			minor		=> 1,
-			warning		=> 1,
-			info		=> 1,
-			condition	=> 1,
-			cleared		=> 1,
-			flapping	=> 1,
-			soaking		=> 1
-		);
-
-	if ( defined $args{severity} and !(defined $severity{$args{severity}}) ) {
-		$self->{error}	= 'Unknown severity type specified: ';
-		return
-	}
-
-	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
-	$args{ack} 		= (defined $args{ack} ? _isYesNo($args{ack},'ack') : 'no');
-	my $content;
-
-	if (defined $args{severity}) {
-		$content	= '<configResolveClass inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '" classId="faultInst" >' . 
-						'<inFilter>' .
-							'<eq class="faultInst" property="severity" value="' . $args{severity} . '" />' . 
-						'</inFilter>' . 
-					'</configResolveClass>';
-	}
-	else {
-		$content	= '<configResolveClass inHierarchical="' . $args{inHierarchical} . '" cookie="' . $self->{cookie} . '" classId="faultInst" />';
-	}
-
-	my $xml			= $self->_ucsm_request($content) or return;
-	my @faults 		= keys %{$xml->{outConfigs}->{faultInst}};
-	return @faults;
+	my ($self, $id)	=@_;
+	return $self->_get_child_objects(id => $id, type => 'faultInst', class => 'Cisco::UCS::Fault', attr => 'fault');
 }
 
 sub _has_cookie {

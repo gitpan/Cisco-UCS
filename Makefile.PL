@@ -19,8 +19,9 @@ WriteMakefile(
 	'Cisco::UCS::Interconnect'	=> 0,
 	'Cisco::UCS::FEX'		=> 0,
 	'Cisco::UCS::Blade'		=> 0,
+	'Cisco::UCS::Fault'		=> 0,
 	'Cisco::UCS::ServiceProfile'	=> 0,
-	'Cisco::UCS::MgmtEntity'	=> 0,
+	'Cisco::UCS::MgmtEntity'	=> 0
     },
     dist                => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean               => { FILES => 'Cisco-UCS-*' },
