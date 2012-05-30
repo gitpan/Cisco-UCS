@@ -16,7 +16,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.26';
+our $VERSION		= '0.27';
 
 our @ATTRIBUTES		= qw(dn cluster cookie);
 
@@ -339,7 +339,7 @@ sub _get_child_objects {
 			: $ucs->resolve_children(dn => $ref->{dn})
 		  );
 
-	if (ref($xml->{outConfigs}->{$args{type}}) eq 'ARRAY') { 
+	if (ref($xml->{outConfigs}->{$args{type}}) eq 'ARRAY') {
 		$args{uid} ||= 'id';
 		my $res;
 		
@@ -349,6 +349,11 @@ sub _get_child_objects {
 
 		$xml->{outConfigs}->{$args{type}} = $res
 	} 
+	elsif ((ref($xml->{outConfigs}->{$args{type}}) eq 'HASH') and (exists $xml->{outConfigs}->{$args{type}}->{dn})) {
+		$args{uid} ||= 'id';
+		my $res->{$xml->{outConfigs}->{$args{type}}->{$args{uid}}} = $xml->{outConfigs}->{$args{type}};
+		$xml->{outConfigs}->{$args{type}} = $res
+	}
 
         return ( defined $xml->{outConfigs}->{$args{type}}
                 ? do {  my @res; 
@@ -366,7 +371,7 @@ sub _get_child_objects {
     
 }
 
-=head3 get_error_id ( $ERROR_ID )
+=head3 get_error_id ( $ID )
 
 	my %error = $ucs->get_error_id($id);
 
@@ -374,44 +379,67 @@ sub _get_child_objects {
 		print "$key:\t$value\n";
 	}
 	
+B<This method is deprecated, please use the equivalent get_error method>.
+
 Returns a hash containing the UCSM event detail for the given error id.  This method takes a single argument;
 the UCSM error_id of the desired error.
-
-See B<get_errors> for an example of how to obtain error_id values.
 
 =cut
 
 sub get_error_id {
-	my ($self, $error_id)	= @_;
-	return unless $self->_has_cookie;
-	
-	unless ($error_id =~ /[0-9]{1,9}/) {
-		$self->{error}	= 'Error ID out of range (0-999999999)';
-		return 
-	}
+	warn "get_error_id has been deprecated in future releases";
+	return get_error(@_)
+}
 
-	my $xml		= $self->_ucsm_request('<configResolveClass inHierarchical="false" cookie="' . $self->{cookie} . '" classId="faultInst" />') or return;
-	my %error 	= %{$xml->{outConfigs}->{faultInst}->{$error_id}};
-	return %error;
+=head3 error ( $id )
+
+	my $error = $ucs->get_error($id);
+	print $error->id . ":" . $error->desc . "\n";
+
+Returns a Cisco::UCS::Fault object representing the specified error.  Note that this is a caching method
+and will return a cached object that has been retrieved on previous queries should on be available.
+
+If you require a fresh object, consider using the equivalent non-caching B<get_error> method below.
+
+=cut
+
+sub error {
+	my ($self, $id) = @_;
+	return ( defined $self->{fault}->{$id} ? $self->{fault}->{$id} : $self->get_error($id) )
+}
+
+=head2 get_error ( $ID )
+
+Returns a Cisco::UCS::Fault object representing the specified error.  Note that this is a non-caching
+method and that the UCSM will always be queried for information.  Consequently this method may be
+more expensive than the equivalent caching method B<error> described above.
+
+=cut
+
+sub get_error {
+	my ($self, $id)=@_;
+	return $self->get_errors($id)
 }
 
 =head3 get_errors ()
 
-	my @errors 	= $ucs->get_errors;
-	my %error	= $ucs->get_error_id($errors[0]);
-	print "Error $id: $error->{description}\n";
+	map {
+		print '-'x50,"\n";
+		print "ID		: " . $_->id . "\n";
+		print "Severity		: " . $_->severity . "\n";
+		print "Description	: " . $_->description . "\n";
+	} grep {
+		$_->severity !~ /cleared/i;
+	} $ucs->get_errors;
 
-Returns an array of UCSM event ID's.  The full event description of the returned event ID's can 
-be retrieved by passing the ID to get_error_id (see above).
-
-Please note that this method has been scheduled for a rewrite in future version and will likely 
-return an array of objects rather than an array of error IDs.
+Returns an array of Cisco::UCS::Fault objects with each object representative of a fault on the target system.
 
 =cut
 
 sub get_errors {
 	my ($self, $id)	=@_;
-	return $self->_get_child_objects(id => $id, type => 'faultInst', class => 'Cisco::UCS::Fault', attr => 'fault');
+	return $self->_get_child_objects(id => $id, type => 'faultInst', class => 'Cisco::UCS::Fault', 
+					uid => 'id', attr => 'fault', class_filter => { classId => 'faultInst' } );
 }
 
 sub _has_cookie {
@@ -644,7 +672,7 @@ The filter is to be specified as any number of name/value pairs in addition to t
 
 sub resolve_class_filter {
 	my($self,%args)	= @_;
-
+	
 	$args{inHierarchical}	= (defined $args{inHierarchical} ? _isInHierarchical($args{inHierarchical}) : 'false');
 
 	my $filter	= $self->_createFilter(%args) or return;
