@@ -16,7 +16,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.27';
+our $VERSION		= '0.28';
 
 our @ATTRIBUTES		= qw(dn cluster cookie);
 
@@ -28,38 +28,41 @@ Cisco::UCS - A Perl interface to the Cisco UCS XML API
 
 =head1 SYNOPSIS
 
-	use Cisco::UCS;
+use Cisco::UCS;
 
-	my $ucs = Cisco::UCS->new ( 	cluster		=> $cluster, 
-					username	=> $username,
-					passwd		=> $password
-				);
+my $ucs = Cisco::UCS->new (
+			cluster		=> $cluster, 
+			username	=> $username,
+			passwd		=> $password
+			);
 
-	$ucs->login();
+$ucs->login();
 
-	@errors	= $ucs->get_errors(severity=>"critical",ack="no");
+@errors = $ucs->get_errors(severity=>"critical",ack="no");
 
-	foreach my $error_id (@errors) {
-		my %this_error = $ucs->get_error_id($error_id);
-		print "Error ID: $error_id.  Severity: $this_error{severity}.  Description: $this_error{descr}\n";
-	}
+foreach my $error_id (@errors) {
+	my %this_error = $ucs->get_error_id($error_id);
+	print "Error ID: $error_id.  Severity: $this_error{severity}.  Description: $this_error{descr}\n";
+}
 
-	print "Interconnect A serial : " . $ucs->interconnect(A)->serial . "\n";
-	# prints "Interconnect A serial : BFG9000"
-	
-	foreach my $chassis ($ucs->chassis) {
-		print "Chassis " . $chassis->id . " serial : " . $chassis->serial . "\n"
-	}
-	
-	# prints:
-	# "Chassis 1 serial : ABC1234"
-	# "Chassis 2 serial : ABC1235"
-	# etc.
+print "Interconnect A serial : " . $ucs->interconnect(A)->serial . "\n";
 
-	print "Interconnect A Ethernet 1/1 TX bytes: " . $ucs->interconnect(A)->card(1)->eth_port(1)->tx_total_bytes . "\n";
-	# prints "Interconnect A Ethernet 1/1 TX bytes: 83462486"
+# prints "Interconnect A serial : BFG9000"
 
-	$ucs->logout();
+foreach my $chassis ($ucs->chassis) {
+	print "Chassis " . $chassis->id . " serial : " . $chassis->serial . "\n"
+}
+
+# prints:
+# "Chassis 1 serial : ABC1234"
+# "Chassis 2 serial : ABC1235"
+# etc.
+
+print "Interconnect A Ethernet 1/1 TX bytes: " . $ucs->interconnect(A)->card(1)->eth_port(1)->tx_total_bytes . "\n";
+
+# prints "Interconnect A Ethernet 1/1 TX bytes: 83462486"
+
+$ucs->logout();
 
 =head1 DESCRIPTION
 
@@ -125,7 +128,7 @@ authetication token that uniquely identifies the connection and which is subsequ
 further communications.
 
 The default time-out value for a token is 10 minutes, therefore if you intend to create a long-running session you
-should periodicalily call refresh.
+should periodically call refresh.
 
 =head3 refresh ()
 
@@ -170,6 +173,7 @@ sub new {
         defined $args{cluster}  ? $self->{cluster}  = $args{cluster}	: croak 'cluster not defined';
         defined $args{username} ? $self->{username} = $args{username}	: croak 'username not defined';
         defined $args{passwd}	? $self->{passwd}   = $args{passwd}	: croak 'passwd not defined';
+        defined $args{verify_hostname} ? $self->{verify_hostname} = $args{verify_hostname} : 0;
 	$self->{port}		= ($args{port}	or 443);
 	$self->{proto}		= ($args{proto} or 'https');
 	$self->{dn}		= ($args{dn} or 'sys');
@@ -198,7 +202,7 @@ sub login {
 	my $self = shift;
 
 	undef $self->{error};
-	$self->{ua}	= LWP::UserAgent->new;
+	$self->{ua}	= LWP::UserAgent->new( ssl_opts => { verify_hostname => $self->{verify_hostname} } );
 	$self->{uri}	= $self->{proto}. '://' .$self->{cluster}. ':' .$self->{port}. '/nuova';
 	$self->{req}	= HTTP::Request->new(POST => $self->{uri});
 	$self->{req}->content_type('application/x-www-form-urlencoded');
@@ -207,7 +211,7 @@ sub login {
 
 	unless ($res->is_success) {
 		$self->{error}	= 'Login failure: '.$res->status_line;
-		return
+		return 0
 	}
 
 	$self->{parser}	= XML::Simple->new;
@@ -215,10 +219,11 @@ sub login {
 
 	if(defined $xml->{'errorCode'}) {
 		$self->{error}	= 'Login failure: '. (defined $xml->{'errorDescr'} ? $xml->{'errorDescr'} : 'Unspecified error');
-		return 
+		return 0
 	}
 
 	$self->{cookie}	= $xml->{'outCookie'};
+	return 1
 }
 
 sub refresh {
@@ -230,24 +235,25 @@ sub refresh {
 
 	unless ($res->is_success) {
 		$self->{error}	= 'Refresh failed: ' . $res->status_line;
-		return
+		return 0
 	}
 
 	my $xml	= $self->{parser}->XMLin($res->content());
 
 	if (defined $xml->{'errorCode'}) {
 		$self->{error}	= 'Refresh failure: '. (defined $xml->{'errorDescr'} ? $xml->{'errorDescr'} : 'Unspecified error');
-		return
+		return 0
 	}
 
         $self->{cookie}	= $xml->{'outCookie'};
+	return 1
 }
 
 sub logout {
 	my $self = shift;
 	return unless $self->{cookie};
 	undef $self->{error};
-	$self->_ucsm_request('<aaaLogout inCookie="'. $self->{cookie} .'" />') or return;
+	return ( $self->_ucsm_request('<aaaLogout inCookie="'. $self->{cookie} .'" />') ? 1 : 0 )
 }
 
 sub _ucsm_request {
@@ -364,9 +370,9 @@ sub _get_child_objects {
                         }   
                         return @res unless $args{id};
                         return $ref->{$args{attr}}->{$args{id}} if $args{id} and $ref->{$args{attr}}->{$args{id}};
-                        return undef
+                        return
                      }    
-                : undef
+                : ()
                 );  
     
 }
@@ -442,10 +448,6 @@ sub get_errors {
 					uid => 'id', attr => 'fault', class_filter => { classId => 'faultInst' } );
 }
 
-sub _has_cookie {
-	return ( $_[0]->{cookie} ? 1 : undef  )
-}
-
 sub _isInHierarchical {
 	my $inHierarchical	= lc shift;
 
@@ -454,19 +456,6 @@ sub _isInHierarchical {
 	return $inHierarchical if ($inHierarchical =~ /^true|false$/);
 
 	return ($inHierarchical == 0 ? 'false' : 'true');
-}
-
-sub _isYesNo {
-	my ($val, $var)	= @_;
-	$var = lc $val;
-
-	unless($val =~ /yes|no|0|1/) {
-		return 'false'
-	}
-
-	return if ($val =~ /^false|yes$/);
-
-	return ($val == 0 ? 'false' : 'yes');
 }
 
 sub _createFilter {
@@ -489,28 +478,6 @@ sub _createFilter {
 	return $filter;
 }
 
-sub _check_args {
-        my $self        = shift;
-	
-	$self->_has_cookie() or return;
-	undef $self->{error};
-#        defined $self->{ucs}->{cluster}	or	croak 'cluster not defined';
-#        defined $self->{ucs}->{port}    or	croak 'port not defined';
-#        defined $self->{ucs}->{proto}   or	croak 'proto not defined';
-#        defined $self->{ucs}->{cookie}  or	croak 'cookie not defined';
-#        defined $self->{ucs}->{dn}      or	croak 'dn not defined';
-#        defined $self->{ucs}->{parser}  or	croak 'parser not defined';
-#        defined $self->{ucs}->{ua}      or	croak 'ua not defined';
-#        defined $self->{ucs}->{req}     or	croak 'req not defined';
-        return 1;
-}
-
-sub _error {
-	my ($self, $error) = @_;
-	$self->{error} = $error;
-	return undef
-}
-
 =head3 resolve_class ( %ARGS )
 
 This method is used to retrieve objects from the UCSM management heirachy by resolving the classId for specific
@@ -526,8 +493,6 @@ to alter this method.
 sub resolve_class {
 	my ($self,%args)= @_;
 
-	$self->_check_args or return;
-	
 	unless ( defined $args{classId} ) {
 		$self->{error}	= 'No classId specified';
 		return
@@ -554,8 +519,6 @@ to alter this method.
 
 sub resolve_classes {
 	my ($self,%args)= @_;
-
-	$self->_check_args or return;
 
 	unless (defined $args{classId}) {
 		$self->{error}	= 'No classID specified';
@@ -599,8 +562,6 @@ to alter this method.
 sub resolve_dn {
 	my ($self,%args)= @_;
 
-	$self->_check_args or return;
-
 	unless (defined $args{dn}) {
 		$self->{error}	= 'No dn specified';
 		return
@@ -611,7 +572,7 @@ sub resolve_dn {
 	my $xml	= $self->_ucsm_request(	'<configResolveDn dn="' . $args{dn} . 
 					'" inHierarchical="' . $args{inHierarchical} . 
 					'" cookie="' . $self->{cookie} . '" />' 
-				) or return undef;
+				) or return;
 	return $xml;
 }
 
@@ -663,7 +624,7 @@ This method is used to retrieve objects from the UCSM management heirachy by res
 object types matching a specified filter composed of any number of key/value pairs that correlate to object attributes.
 
 This method is very similar to the <B>resolve_class method, however a filter can be specified to restrict the objects
-returned to thse having certain characteristics.  This method is largely exploited by subclasses to return specific
+returned to those having certain characteristics.  This method is largely exploited by subclasses to return specific
 object types.
 
 The filter is to be specified as any number of name/value pairs in addition to the classId parameter.
@@ -695,12 +656,25 @@ of a HA pair of Fabric Interconnects, this status is representative of the clust
 sub get_cluster_status {
 	my $self= shift;
 
-	$self->_check_args or return;
-
 	my $xml	= $self->resolve_dn(dn => 'sys') or return;
 
 	return (defined $xml->{outConfig}->{topSystem} ? $xml->{outConfig}->{topSystem} : undef)
 }
+
+=head3 get_version ()
+
+	my $version = $ucs->get_version;
+
+This method returns a string containign the running UCSM software version.
+
+=cut
+
+sub version {
+	my $self= shift;
+	my $xml	= $self->resolve_dn(dn => 'sys/mgmt/fw-system') or return;
+	return (defined $xml->{outConfig}->{firmwareRunning}->{version} ? $xml->{outConfig}->{firmwareRunning}->{version} : undef)
+}
+
 
 =head3 mgmt_entity ( $id )
 
@@ -765,7 +739,7 @@ sub get_mgmt_entities {
 	my $primary = $ucs->get_primary_mgmt_entity;
 	print "Management entity $entity->{id} is primary\n";
 
-Returns an anonymous hash contaiing information on the primary UCSM management entity object.  
+Returns an anonymous hash containing information on the primary UCSM management entity object.  
 This is the active managing instance of UCSM in the target cluster.
 
 =cut
@@ -773,8 +747,6 @@ This is the active managing instance of UCSM in the target cluster.
 
 sub get_primary_mgmt_entity {
 	my $self	= shift;
-
-	$self->_check_args or return;
 
 	my $xml		= $self->resolve_class_filter(classId => 'mgmtEntity', leadership => 'primary') or return;
 
@@ -791,8 +763,6 @@ Returns an anonymous hash containing information on the subordinate UCSM managem
 
 sub get_subordinate_mgmt_entity {
 	my $self= shift;
-
-	$self->_check_args or return;
 
 	my $xml	= $self->resolve_class_filter(classId => 'mgmtEntity', leadership => 'subordinate') or return;
 
@@ -1042,7 +1012,7 @@ wrapper method around the private backup method.  Required parameters for this m
 
 =item backup_proto 
 
-The protocol to use for transfering the backup from the target UCS cluster to the backup host.  Must be one of: ftp, tftp, scp or sftp.
+The protocol to use for transferring the backup from the target UCS cluster to the backup host.  Must be one of: ftp, tftp, scp or sftp.
 
 =item backup_host
 
@@ -1187,7 +1157,7 @@ as will requests for cached objects not present in cache.
 =item *
 
 The documentation could be cleaner and more thorough.  The module was written some time ago with only minor amounts of time and effort invested since.
-There's still a vast oppotunity for improvement.
+There's still a vast opportunity for improvement.
 
 =item *
 
