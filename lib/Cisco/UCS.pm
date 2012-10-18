@@ -16,7 +16,7 @@ use Carp qw(croak carp cluck);
 
 use vars qw($VERSION);
 
-our $VERSION		= '0.28';
+our $VERSION		= '0.29';
 
 our @ATTRIBUTES		= qw(dn cluster cookie);
 
@@ -661,9 +661,9 @@ sub get_cluster_status {
 	return (defined $xml->{outConfig}->{topSystem} ? $xml->{outConfig}->{topSystem} : undef)
 }
 
-=head3 get_version ()
+=head3 version ()
 
-	my $version = $ucs->get_version;
+	my $version = $ucs->version;
 
 This method returns a string containign the running UCSM software version.
 
