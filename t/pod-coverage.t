@@ -19,7 +19,9 @@ plan skip_all => "Pod::Coverage $min_pc required for testing POD coverage"
 pod_coverage_ok( 'Cisco::UCS' );
 pod_coverage_ok( 'Cisco::UCS::Blade',	 		{ also_private => [ 'new' ] } );
 pod_coverage_ok( 'Cisco::UCS::Blade::CPU',		{ also_private => [ 'new' ] } );
+pod_coverage_ok( 'Cisco::UCS::Blade::PowerBudget',	{ also_private => [ 'new' ] } );
 pod_coverage_ok( 'Cisco::UCS::Chassis',	 		{ also_private => [ 'new' ] } );
+pod_coverage_ok( 'Cisco::UCS::Chassis::Stats',		{ also_private => [ 'new' ] } );
 pod_coverage_ok( 'Cisco::UCS::Fault', 			{ also_private => [ 'new' ] } );
 pod_coverage_ok( 'Cisco::UCS::FEX',	 		{ also_private => [ 'new' ] } );
 pod_coverage_ok( 'Cisco::UCS::Interconnect', 		{ also_private => [ 'new' ] } );

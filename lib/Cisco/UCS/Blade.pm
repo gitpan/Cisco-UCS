@@ -6,9 +6,10 @@ use strict;
 use Carp 		qw(croak);
 use Scalar::Util 	qw(weaken);
 use Cisco::UCS::Blade::CPU;
+use Cisco::UCS::Blade::PowerBudget;
 use Cisco::UCS::Common::PowerStats;
 
-our $VERSION = '0.3';
+our $VERSION = '0.4';
 
 our @ATTRIBUTES	= qw(association availability discovery dn model name operability presence revision serial uuid vendor);
 
@@ -99,6 +100,12 @@ sub power_stats {
 	my $self = shift;
 	return Cisco::UCS::Common::PowerStats->new( 
 		$self->{ucs}->resolve_dn( dn => "$self->{dn}/board/power-stats" )->{outConfig}->{computeMbPowerStats} )
+}
+
+sub power_budget {
+	my $self = shift;
+	return Cisco::UCS::Blade::PowerBudget->new(
+		$self->{ucs}->resolve_dn( dn => "$self->{dn}/budget" )->{outConfig}->{powerBudget} )
 }
 
 sub cpu {
@@ -328,6 +335,11 @@ Returns the operational status of the specified blade.
 =head3 presence
 
 Returns the presence status of the specified blade.
+
+=head3 power_budget
+
+Returns a L<Cisco::UCS::Blade::PowerBudget> object representing the power budget
+values for the specified blade.
 
 =head3 power_stats
 
